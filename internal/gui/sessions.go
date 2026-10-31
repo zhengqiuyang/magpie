@@ -7,7 +7,6 @@ import (
 	"errors"
 	"maps"
 	"net/http"
-	"os"
 	"reflect"
 	"runtime"
 	"runtime/debug"
@@ -21,7 +20,6 @@ import (
 
 	"github.com/yetone/magpie/internal/agent"
 	"github.com/yetone/magpie/internal/filememo"
-	"github.com/yetone/magpie/internal/proc"
 	"github.com/yetone/magpie/internal/sessions"
 	"github.com/yetone/magpie/internal/settings"
 	"github.com/yetone/magpie/internal/usage"
@@ -100,7 +98,7 @@ func sessionRoutes(mux *http.ServeMux, w Windows) {
 		for _, a := range agent.Clients() {
 			agents[a.ID] = a
 		}
-		out := sessionsJSON{Sessions: []sessionJSON{}, Terminal: runtime.GOOS == "darwin" && !isWeb(w),
+		out := sessionsJSON{Sessions: []sessionJSON{}, Terminal: (runtime.GOOS == "darwin" || runtime.GOOS == "windows" || runtime.GOOS == "linux") && !isWeb(w),
 			Dirs: []string{}}
 		for _, d := range sessions.Dirs() {
 			out.Dirs = append(out.Dirs, tilde(d))
@@ -347,8 +345,8 @@ func sessionRoutes(mux *http.ServeMux, w Windows) {
 			fail(rw, err)
 			return
 		}
-		if runtime.GOOS != "darwin" || isWeb(w) {
-			fail(rw, errors.New("opening Terminal is only for the Mac app"))
+		if isWeb(w) {
+			fail(rw, errors.New("opening Terminal is only for the desktop apps"))
 			return
 		}
 		s, ok := sessions.Find(in.Agent, in.ID)
@@ -380,8 +378,8 @@ func sessionRoutes(mux *http.ServeMux, w Windows) {
 			fail(rw, err)
 			return
 		}
-		if runtime.GOOS != "darwin" || isWeb(w) {
-			fail(rw, errors.New("opening Terminal is only for the Mac app"))
+		if isWeb(w) {
+			fail(rw, errors.New("opening Terminal is only for the desktop apps"))
 			return
 		}
 		run := ""
@@ -414,8 +412,8 @@ func sessionRoutes(mux *http.ServeMux, w Windows) {
 			fail(rw, err)
 			return
 		}
-		if in.Open && (runtime.GOOS != "darwin" || isWeb(w)) {
-			fail(rw, errors.New("opening Terminal is only for the Mac app"))
+		if in.Open && isWeb(w) {
+			fail(rw, errors.New("opening Terminal is only for the desktop apps"))
 			return
 		}
 		s, ok := sessions.Find(in.Agent, in.ID)
@@ -823,10 +821,21 @@ const tightGCPercent = 10
 
 // agentCommand is the shell line that starts a: its Launch where it has
 // one (agy, Claude Science, Cursor Private Inference), else its own
-// program, quoted; "" for one in a WSL distro or with no program here (a
+// program, quoted for the host shell (POSIX single quotes, cmd.exe double
+// quotes on Windows); a WSL agent is reached through wsl.exe on Windows,
+// and has no line elsewhere. "" also for an agent with no program here (a
 // desktop app). Nothing of the page's goes into it.
 func agentCommand(a *agent.Agent) string {
 	if a.WSL != "" {
+		// A WSL agent's program runs inside its distro, so BinPath is ""
+		// here; on Windows the terminal reaches it through wsl.exe, and
+		// other hosts have no WSL.
+		if runtime.GOOS != "windows" {
+			return ""
+		}
+		if a.Bin != "" {
+			return strings.Join([]string{"wsl.exe", "-d", a.WSL, "--", a.Bin}, " ")
+		}
 		return ""
 	}
 	if a.Launch != nil {
@@ -835,6 +844,9 @@ func agentCommand(a *agent.Agent) string {
 		}
 	}
 	if bin := a.BinPath(); bin != "" {
+		if runtime.GOOS == "windows" {
+			return windowsQuote(bin)
+		}
 		return shellQuote(bin)
 	}
 	return ""
@@ -845,47 +857,13 @@ var agentTerminal = openTerminal
 
 func shellQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'" }
 
-// openTerminal runs a command in the chosen Mac terminal through a .command
-// file, as it would open from Finder: no Automation consent.
-// The shell is left open when the agent quits.
-func openTerminal(command, choice string) error {
-	var found terminalDiscovery
-	if choice != terminalBundleID {
-		var err error
-		// the system default falls back to Terminal when nothing is found
-		if found, err = discoverTerminals(); err != nil && choice != "" && choice != "system" {
-			return err
-		}
-	}
-	args, err := terminalOpenArgs(choice, found)
-	if err != nil {
-		return err
-	}
-	f, err := os.CreateTemp("", "magpie-resume-*.command")
-	if err != nil {
-		return err
-	}
-	script := "#!/bin/sh\n" + command + "\nexec \"${SHELL:-/bin/zsh}\" -l\n"
-	_, err = f.WriteString(script)
-	if cerr := f.Close(); err == nil {
-		err = cerr
-	}
-	if err == nil {
-		err = os.Chmod(f.Name(), 0o700)
-	}
-	if err != nil {
-		os.Remove(f.Name())
-		return err
-	}
-	args = append(args, f.Name())
-	if err := proc.Command("open", args...).Run(); err != nil {
-		os.Remove(f.Name())
-		return err
-	}
-	// Terminal has read it long before
-	time.AfterFunc(time.Minute, func() { os.Remove(f.Name()) })
-	return nil
-}
+// windowsQuote quotes a program path for cmd.exe: double quotes, the one
+// quoting a batch file honors. (A literal " inside a path cannot be quoted
+// away; such paths are not real.)
+func windowsQuote(s string) string { return "\"" + s + "\"" }
+
+// openTerminal is per-OS: see terminal_open_darwin.go, terminal_open_windows.go
+// and terminal_open_linux.go.
 
 // viaOf is what the gateway sent a session's calls to, under any key its
 // gateway record can carry (sessions.GatewayKeys: Raft's Pi says it is Pi).

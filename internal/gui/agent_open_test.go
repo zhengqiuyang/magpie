@@ -108,11 +108,20 @@ func TestAgentCommandNeedsAProgram(t *testing.T) {
 	t.Cleanup(proc.Forget)
 	for _, a := range []*agent.Agent{
 		{ID: "app", Name: "An app"},
-		{ID: "claude@wsl:Ubuntu", Bin: "sh", WSL: "Ubuntu", Launch: func() string { return "claude" }},
 	} {
 		if run := agentCommand(a); run != "" {
 			t.Errorf("%s: %q", a.ID, run)
 		}
+	}
+	// a WSL agent's line reaches its distro through wsl.exe on Windows
+	// (issue #4474); no other host has WSL, so there it stays "".
+	wsl := &agent.Agent{ID: "claude@wsl:Ubuntu", Bin: "sh", WSL: "Ubuntu", Launch: func() string { return "claude" }}
+	if runtime.GOOS == "windows" {
+		if run := agentCommand(wsl); run != "wsl.exe -d Ubuntu -- sh" {
+			t.Errorf("wsl: %q", run)
+		}
+	} else if run := agentCommand(wsl); run != "" {
+		t.Errorf("%s: %q", wsl.ID, run)
 	}
 	// one that starts on magpie by its environment (agy) opens on that
 	if run := agentCommand(&agent.Agent{ID: "agy", Bin: "agy", Launch: func() string { return "X=1 agy" }}); run != "X=1 agy" {

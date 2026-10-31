@@ -2801,7 +2801,14 @@ func state() stateJSON {
 		}
 		aj.CLIMissing = a.CLIMissing()
 		// as agentCommand makes it, Launch asked once
-		aj.Terminal = runtime.GOOS == "darwin" && a.WSL == "" && (aj.Launch != "" || a.BinPath() != "")
+		switch runtime.GOOS {
+		case "windows":
+			// a WSL agent reaches its program through wsl.exe, so it offers
+			// Open in terminal here too
+			aj.Terminal = a.WSL != "" || aj.Launch != "" || a.BinPath() != ""
+		default:
+			aj.Terminal = a.WSL == "" && (aj.Launch != "" || a.BinPath() != "")
+		}
 		if a.Native != nil {
 			native := a.Native.Read()
 			aj.Native = &native
